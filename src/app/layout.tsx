@@ -47,13 +47,19 @@ export default function RootLayout({
       <body className="min-h-screen antialiased">
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
         {children}
-        {/* Monetag In-Page Push */}
+        
+        {/* Monetag In-Page Push 11912513 */}
         <Script
           id="monetag-inpage"
           strategy="afterInteractive"
           dangerouslySetInnerHTML={{
             __html: `(function(s){s.dataset.zone='11912513',s.src='https://nap5k.com/tag.min.js'})([document.documentElement, document.body].filter(Boolean).pop().appendChild(document.createElement('script')))`,
           }}
+        />
+        {/* Monetag Push Superior 11912659 */}
+        <Script
+          src="https://5gvci.com/act/files/tag.min.js?z=11912659"
+          strategy="afterInteractive"
         />
       </body>
     </html>
