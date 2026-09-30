@@ -17,6 +17,10 @@ export interface Job {
   imgH: number;
   cols: number;
   rows: number;
+  /** custom column divider fractions (length cols+1, 0..1). null = evenly spaced */
+  colPos: number[] | null;
+  /** custom row divider fractions (length rows+1, 0..1). null = evenly spaced */
+  rowPos: number[] | null;
   trim: number; // percentage of each side removed (0..10)
   scale: number; // output multiplier 0.25..10
   format: OutFormat;
@@ -37,6 +41,30 @@ export const SCALE_MAX = 10;
 
 export const clamp = (v: number, min: number, max: number) =>
   Math.min(max, Math.max(min, v));
+
+/** Evenly spaced divider fractions for n divisions (n+1 entries, 0..1). */
+export function evenPositions(n: number): number[] {
+  return Array.from({ length: n + 1 }, (_, i) => i / n);
+}
+
+/**
+ * Normalizes a stored divider array: must have n+1 finite entries, start at 0,
+ * end at 1 and strictly increase. Falls back to evenly spaced otherwise.
+ */
+export function normalizePositions(
+  pos: number[] | null | undefined,
+  n: number,
+): number[] {
+  if (!pos || pos.length !== n + 1 || n < 1) return evenPositions(n);
+  const arr = pos.slice();
+  arr[0] = 0;
+  arr[n] = 1;
+  for (let i = 0; i <= n; i++) {
+    if (!Number.isFinite(arr[i])) return evenPositions(n);
+    if (i > 0 && !(arr[i] > arr[i - 1])) return evenPositions(n);
+  }
+  return arr;
+}
 
 export const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto

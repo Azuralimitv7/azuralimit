@@ -53,6 +53,8 @@ function newJob(file: File): Job {
     imgH: 0,
     cols: 4,
     rows: 4,
+    colPos: null,
+    rowPos: null,
     trim: 0,
     scale: 1,
     format: "png",
@@ -230,6 +232,8 @@ export default function Studio() {
           img: j.img,
           cols: j.cols,
           rows: j.rows,
+          colPos: j.colPos,
+          rowPos: j.rowPos,
           trim: j.trim,
           scale: j.scale,
           format: j.format,
@@ -237,14 +241,17 @@ export default function Studio() {
           onProgress: (p) => updateJob(id, { progress: p }),
         });
         const names = cellNames(sanitizeName(j.name), j.cols, j.rows, out.ext);
+        const varied =
+          out.sizes.length > 1 &&
+          out.sizes.some((s) => s.w !== out.outW || s.h !== out.outH);
         updateJob(id, {
           status: "done",
           progress: 1,
           cells: names.map((n, i) => ({
             name: n,
             thumb: out.thumbs[i],
-            w: out.outW,
-            h: out.outH,
+            w: out.sizes[i]?.w ?? out.outW,
+            h: out.sizes[i]?.h ?? out.outH,
           })),
           blobs: out.blobs,
           outW: out.outW,
@@ -254,7 +261,20 @@ export default function Studio() {
         [0, 1, 2, 3].forEach((i) => window.setTimeout(() => sfx.pop(i), 120 + i * 80));
         const rect = cardRefs.current[id]?.getBoundingClientRect();
         if (rect) celebrate(rect.left + rect.width / 2, rect.top + rect.height / 2, 30, 1);
-        toast(`${j.name}: ${names.length.toLocaleString()} keping selesai dipotong`, "ok");
+        const sizeNote = varied
+          ? `ukuran bervariasi per blok (keping pertama ${out.outW}×${out.outH}px)`
+          : `${out.outW}×${out.outH}px`;
+        if (out.clamped) {
+          toast(
+            `${j.name}: ${names.length.toLocaleString()} keping selesai (${sizeNote} — batas aman resolusi tinggi)`,
+            "ok",
+          );
+        } else {
+          toast(
+            `${j.name}: ${names.length.toLocaleString()} keping selesai dipotong (${sizeNote})`,
+            "ok",
+          );
+        }
       } catch (e) {
         updateJob(id, {
           status: "error",
@@ -287,9 +307,22 @@ export default function Studio() {
       const src = jobs.find((j) => j.id === srcId);
       if (!src) return;
       setJobs((js) =>
-        js.map((j) => (j.id === srcId ? j : { ...j, cols: src.cols, rows: src.rows })),
+        js.map((j) =>
+          j.id === srcId
+            ? j
+            : {
+                ...j,
+                cols: src.cols,
+                rows: src.rows,
+                colPos: src.colPos ? [...src.colPos] : null,
+                rowPos: src.rowPos ? [...src.rowPos] : null,
+              },
+        ),
       );
-      toast(`Grid ${src.cols}×${src.rows} disamakan ke seluruh lembar`, "ok");
+      toast(
+        `Grid ${src.cols}×${src.rows}${src.colPos ? " (posisi blok disalin)" : ""} disamakan ke seluruh lembar`,
+        "ok",
+      );
     },
     [jobs],
   );
@@ -419,6 +452,29 @@ export default function Studio() {
   const activeTheme = themeById(settings.theme);
   const lbJob = lightbox ? jobs.find((j) => j.id === lightbox.jobId) : null;
   const lbCell = lbJob?.cells?.[lightbox?.idx ?? 0] ?? null;
+
+  // Cells beyond the first 64 have no thumbnail — resolve a Blob URL on demand
+  const lbJobId = lightbox?.jobId ?? null;
+  const lbIdx = lightbox?.idx ?? -1;
+  const [lbSrc, setLbSrc] = useState("");
+  useEffect(() => {
+    if (!lbJob || !lbCell) {
+      setLbSrc("");
+      return;
+    }
+    if (lbCell.thumb) {
+      setLbSrc(lbCell.thumb);
+      return;
+    }
+    const b = lbJob.blobs?.[lbIdx];
+    if (!b) {
+      setLbSrc("");
+      return;
+    }
+    const url = URL.createObjectURL(b);
+    setLbSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [lbJobId, lbIdx, lbJob, lbCell]);
 
   return (
     <div className="relative min-h-screen">
@@ -889,7 +945,7 @@ export default function Studio() {
             </div>
             <div className="flex flex-1 items-center justify-center overflow-auto p-5">
               <img
-                src={lbCell.thumb}
+                src={lbSrc || lbCell.thumb}
                 alt={lbCell.name}
                 className="max-h-[62vh] max-w-full border-2 border-[var(--line-strong)] object-contain shadow-[4px_4px_0_var(--shadow-hard)]"
                 style={{ imageRendering: lbCell.w <= 200 ? "pixelated" : "auto" }}

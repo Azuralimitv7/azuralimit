@@ -1,10 +1,18 @@
 "use client";
 
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Job } from "@/lib/types";
-import { GRID_MAX, SCALE_MAX, SCALE_MIN, clamp } from "@/lib/types";
+import {
+  GRID_MAX,
+  SCALE_MAX,
+  SCALE_MIN,
+  clamp,
+  normalizePositions,
+} from "@/lib/types";
 import { fmtBytes } from "@/lib/cut";
+import { resolveSafeCellSize } from "@/lib/encoder";
 import { sfx } from "@/lib/sound";
+import { toast } from "./Toasts";
 import {
   IconBox,
   IconGrid,
@@ -22,6 +30,8 @@ import {
 const PRESETS = [1, 2, 3, 4, 5, 6, 8, 10, 16, 25, 50, 100];
 const SCALE_CHIPS = [0.5, 1, 2, 4, 5, 10];
 const MAX_THUMBS = 48;
+const ZOOM_MIN = 0.4;
+const ZOOM_MAX = 6;
 
 interface Props {
   index: number;
@@ -86,55 +96,263 @@ function Stepper({
   );
 }
 
+/* ---------------- draggable grid drag state ---------------- */
+
+type DragState =
+  | { kind: "col"; idx: number; startX: number; colP0: number[]; rowP0: number[] }
+  | { kind: "row"; idx: number; startY: number; colP0: number[]; rowP0: number[] }
+  | {
+      kind: "block";
+      c: number;
+      r: number;
+      startX: number;
+      startY: number;
+      colP0: number[];
+      rowP0: number[];
+    }
+  | null;
+
 export default function JobCard(props: Props) {
   const { job, index } = props;
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const imgRef = useRef<HTMLImageElement>(null);
-  const [box, setBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-  const [hover, setHover] = useState<{ c: number; r: number } | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<DragState>(null);
+
+  const [cont, setCont] = useState({ w: 800, h: 270 });
+  const [zoom, setZoom] = useState(1);
+  const [dragging, setDragging] = useState(false);
+  const [hover, setHover] = useState<{ c: number; r: number; fx: number; fy: number } | null>(null);
   const [showNumbers, setShowNumbers] = useState(false);
   const [flash, setFlash] = useState(false);
 
   const total = job.cols * job.rows;
-  const t = Math.min(0.45, job.trim / 100);
+  const t = Math.min(0.45, Math.max(0, trim0(job.trim)));
   const iw = job.imgW * (1 - 2 * t);
   const ih = job.imgH * (1 - 2 * t);
-  const baseCW = job.imgW ? Math.round(iw / job.cols) : 0;
-  const baseCH = job.imgH ? Math.round(ih / job.rows) : 0;
-  const outW = Math.max(1, Math.round((iw / job.cols) * job.scale));
-  const outH = Math.max(1, Math.round((ih / job.rows) * job.scale));
 
-  useLayoutEffect(() => {
+  /* divider fractions (custom-dragged or evenly spaced) */
+  const colP = useMemo(() => normalizePositions(job.colPos, job.cols), [job.colPos, job.cols]);
+  const rowP = useMemo(() => normalizePositions(job.rowPos, job.rows), [job.rowPos, job.rows]);
+  const customGrid = Boolean(job.colPos || job.rowPos);
+
+  /* size estimate for the first block (cells may vary after dragging) */
+  const sw0 = (colP[1] - colP[0]) * iw;
+  const sh0 = (rowP[1] - rowP[0]) * ih;
+  const safeSize = resolveSafeCellSize(
+    Math.max(0.001, sw0),
+    Math.max(0.001, sh0),
+    job.scale,
+  );
+  const outW = job.imgW ? safeSize.outW : 1;
+  const outH = job.imgH ? safeSize.outH : 1;
+  const baseCW = job.imgW ? Math.round(sw0) : 0;
+  const baseCH = job.imgH ? Math.round(sh0) : 0;
+
+  /* ---------- container measurement + fitted display size ---------- */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
     const measure = () => {
-      const w = wrapRef.current;
-      const i = imgRef.current;
-      if (!w || !i || !i.naturalWidth) return;
-      const wr = w.getBoundingClientRect();
-      const ir = i.getBoundingClientRect();
-      setBox({ x: ir.left - wr.left, y: ir.top - wr.top, w: ir.width, h: ir.height });
+      const r = el.getBoundingClientRect();
+      setCont((prev) =>
+        Math.abs(prev.w - r.width) > 1 || Math.abs(prev.h - r.height) > 1
+          ? { w: r.width, h: r.height }
+          : prev,
+      );
     };
     measure();
     const ro = new ResizeObserver(measure);
-    if (wrapRef.current) ro.observe(wrapRef.current);
-    if (imgRef.current) ro.observe(imgRef.current);
+    ro.observe(el);
     window.addEventListener("resize", measure);
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [job.imgW, job.imgH, job.status]);
+  }, []);
 
-  const canHover = box && job.status !== "cutting" && job.imgW > 0;
+  const fit = useMemo(() => {
+    if (!job.imgW || !job.imgH) return 1;
+    return Math.min((cont.w - 30) / job.imgW, (cont.h - 30) / job.imgH, 1);
+  }, [cont, job.imgW, job.imgH]);
 
-  const sliceFx = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!canHover || !box) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left - box.x;
-    const y = e.clientY - rect.top - box.y;
-    const c = clamp(Math.floor((x / box.w) * job.cols), 0, job.cols - 1);
-    const r = clamp(Math.floor((y / box.h) * job.rows), 0, job.rows - 1);
-    setHover({ c, r });
+  const dispW = Math.max(48, Math.round(job.imgW * fit * zoom));
+  const dispH = Math.max(48, Math.round(job.imgH * fit * zoom));
+
+  /* ---------- ctrl/meta + wheel zoom (non-passive listener) ---------- */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const factor = Math.exp(-e.deltaY * 0.0016);
+      setZoom((z) => clamp(z * factor, ZOOM_MIN, ZOOM_MAX));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const setZoomStep = (dir: 1 | -1) => {
+    sfx.tick();
+    setZoom((z) => clamp(Number((z * (dir === 1 ? 1.35 : 1 / 1.35)).toFixed(3)), ZOOM_MIN, ZOOM_MAX));
   };
+
+  /* ---------- draggable grid: pointer handlers ---------- */
+
+  const splitPos = (pos: number[], n: number, f: number) => {
+    let idx = 0;
+    for (let i = 0; i < n; i++) if (f >= pos[i]) idx = i;
+    return idx;
+  };
+
+  const onOverlayDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!job.img || job.status === "cutting") return;
+    const ov = overlayRef.current;
+    if (!ov) return;
+    const rect = ov.getBoundingClientRect();
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+    if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
+
+    e.preventDefault();
+    ov.setPointerCapture(e.pointerId);
+
+    const minGx = 8 / Math.max(1, rect.width);
+    const minGy = 8 / Math.max(1, rect.height);
+    const colP0 = [...colP];
+    const rowP0 = [...rowP];
+
+    // nearest vertical divider (skip in very dense grids where handles overlap)
+    let colHit = -1;
+    if (job.cols <= 60) {
+      const tol = Math.min(minGx * 1.6, (1 / job.cols) * 0.45);
+      let best = tol;
+      for (let i = 1; i < job.cols; i++) {
+        const d = Math.abs(fx - colP0[i]);
+        if (d < best) {
+          best = d;
+          colHit = i;
+        }
+      }
+    }
+    // nearest horizontal divider
+    let rowHit = -1;
+    if (job.rows <= 60) {
+      const tol = Math.min(minGy * 1.6, (1 / job.rows) * 0.45);
+      let best = tol;
+      for (let i = 1; i < job.rows; i++) {
+        const d = Math.abs(fy - rowP0[i]);
+        if (d < best) {
+          best = d;
+          rowHit = i;
+        }
+      }
+    }
+
+    if (colHit > 0 || rowHit > 0) {
+      dragRef.current =
+        colHit > 0
+          ? { kind: "col", idx: colHit, startX: e.clientX, colP0, rowP0 }
+          : { kind: "row", idx: rowHit, startY: e.clientY, colP0, rowP0 };
+    } else {
+      const c = splitPos(colP0, job.cols, fx);
+      const r = splitPos(rowP0, job.rows, fy);
+      dragRef.current = {
+        kind: "block",
+        c,
+        r,
+        startX: e.clientX,
+        startY: e.clientY,
+        colP0,
+        rowP0,
+      };
+    }
+    setDragging(true);
+    sfx.tick();
+  };
+
+  const onOverlayMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const ov = overlayRef.current;
+    const st = dragRef.current;
+    if (!ov) return;
+    const rect = ov.getBoundingClientRect();
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+
+    if (!st) {
+      if (job.img && job.status !== "cutting" && fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) {
+        const c = splitPos(colP, job.cols, fx);
+        const r = splitPos(rowP, job.rows, fy);
+        setHover((h) => (h && h.c === c && h.r === r && h.fx === fx && h.fy === fy ? h : { c, r, fx, fy }));
+      }
+      return;
+    }
+
+    e.preventDefault();
+    const minGx = 8 / Math.max(1, rect.width);
+    const minGy = 8 / Math.max(1, rect.height);
+
+    if (st.kind === "col") {
+      const dx = (e.clientX - st.startX) / rect.width;
+      const next = [...st.colP0];
+      next[st.idx] = clamp(
+        st.colP0[st.idx] + dx,
+        st.colP0[st.idx - 1] + minGx,
+        st.colP0[st.idx + 1] - minGx,
+      );
+      props.onUpdate(job.id, { colPos: next });
+    } else if (st.kind === "row") {
+      const dy = (e.clientY - st.startY) / rect.height;
+      const next = [...st.rowP0];
+      next[st.idx] = clamp(
+        st.rowP0[st.idx] + dy,
+        st.rowP0[st.idx - 1] + minGy,
+        st.rowP0[st.idx + 1] - minGy,
+      );
+      props.onUpdate(job.id, { rowPos: next });
+    } else {
+      const dx = (e.clientX - st.startX) / rect.width;
+      const dy = (e.clientY - st.startY) / rect.height;
+      const c = st.c;
+      const r = st.r;
+
+      // slide the whole block horizontally (both dividers move together)
+      const nextCol = [...st.colP0];
+      const w = st.colP0[c + 1] - st.colP0[c];
+      const loX = c > 0 ? st.colP0[c - 1] + minGx : 0;
+      const hiX = (c < job.cols - 1 ? st.colP0[c + 2] - minGx : 1) - w;
+      const leftX = clamp(st.colP0[c] + dx, loX, Math.max(loX, hiX));
+      nextCol[c] = leftX;
+      nextCol[c + 1] = leftX + w;
+
+      // slide the whole block vertically
+      const nextRow = [...st.rowP0];
+      const h = st.rowP0[r + 1] - st.rowP0[r];
+      const loY = r > 0 ? st.rowP0[r - 1] + minGy : 0;
+      const hiY = (r < job.rows - 1 ? st.rowP0[r + 2] - minGy : 1) - h;
+      const topY = clamp(st.rowP0[r] + dy, loY, Math.max(loY, hiY));
+      nextRow[r] = topY;
+      nextRow[r + 1] = topY + h;
+
+      props.onUpdate(job.id, { colPos: nextCol, rowPos: nextRow });
+    }
+  };
+
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current) {
+      dragRef.current = null;
+      setDragging(false);
+      try {
+        overlayRef.current?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      sfx.tick();
+    }
+  };
+
+  /* ---------- misc ---------- */
 
   const setScale = (v: number) => {
     props.onUpdate(job.id, { scale: clamp(Math.round(v * 100) / 100, SCALE_MIN, SCALE_MAX) });
@@ -151,6 +369,16 @@ export default function JobCard(props: Props) {
   const bigGrid = total > 4000;
   const cutting = job.status === "cutting";
   const done = job.status === "done";
+  const showHandles = job.cols <= 40 && job.rows <= 40;
+
+  /* hovered block size readout */
+  const hoverSize = useMemo(() => {
+    if (!hover || !job.imgW) return null;
+    const sw = (colP[hover.c + 1] - colP[hover.c]) * iw;
+    const sh = (rowP[hover.r + 1] - rowP[hover.r]) * ih;
+    const s = resolveSafeCellSize(Math.max(0.001, sw), Math.max(0.001, sh), job.scale);
+    return { w: s.outW, h: s.outH, sw: Math.round(sw), sh: Math.round(sh) };
+  }, [hover, colP, rowP, iw, ih, job.scale, job.imgW]);
 
   return (
     <article
@@ -171,12 +399,17 @@ export default function JobCard(props: Props) {
               · ASLI {job.imgW}×{job.imgH}px
             </span>
           )}
+          {customGrid && (
+            <span className="border border-[var(--accent-line)] bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--ink)]">
+              POSISI KUSTOM
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5">
           {done && (
             <span className="az-pop az-badge-ok az-num px-2 py-0.5 text-[10px] font-bold">
-              SELESAI · {job.outW}×{job.outH}px
+              SELESAI · {outW}×{outH}px
             </span>
           )}
           <button
@@ -205,124 +438,205 @@ export default function JobCard(props: Props) {
         </div>
       </div>
 
-      {/* ---------------- cutting stage preview ---------------- */}
-      <div
-        ref={wrapRef}
-        onMouseMove={sliceFx}
-        onMouseLeave={() => setHover(null)}
-        className="az-checker relative flex h-[270px] items-center justify-center overflow-hidden border-b border-[var(--line-strong)]"
-      >
-        {/* Corner registration marks (+) */}
-        <span className="pointer-events-none absolute left-2 top-1.5 font-mono text-xs text-[var(--ink-soft)]">+</span>
-        <span className="pointer-events-none absolute right-2 top-1.5 font-mono text-xs text-[var(--ink-soft)]">+</span>
-        <span className="pointer-events-none absolute bottom-1.5 left-2 font-mono text-xs text-[var(--ink-soft)]">+</span>
-        <span className="pointer-events-none absolute bottom-1.5 right-2 font-mono text-xs text-[var(--ink-soft)]">+</span>
+      {/* ---------------- cutting stage (scroll + zoom + draggable grid) ---------------- */}
+      <div className="relative h-[270px] border-b border-[var(--line-strong)]">
+        {/* corner registration marks */}
+        <span className="pointer-events-none absolute left-2 top-1.5 z-10 font-mono text-xs text-[var(--ink-soft)]">+</span>
+        <span className="pointer-events-none absolute right-2 top-1.5 z-10 font-mono text-xs text-[var(--ink-soft)]">+</span>
+        <span className="pointer-events-none absolute bottom-1.5 left-2 z-10 font-mono text-xs text-[var(--ink-soft)]">+</span>
+        <span className="pointer-events-none absolute bottom-1.5 right-2 z-10 font-mono text-xs text-[var(--ink-soft)]">+</span>
 
-        {job.img ? (
-          <img
-            ref={imgRef}
-            src={job.url}
-            alt={job.name}
-            draggable={false}
-            onLoad={() => {
-              const i = imgRef.current;
-              if (i && props.job.status === "loading") {
-                props.onUpdate(job.id, {
-                  status: "idle",
-                  imgW: i.naturalWidth,
-                  imgH: i.naturalHeight,
-                  img: i,
-                });
-              }
-              requestAnimationFrame(() => {
-                const w = wrapRef.current;
-                const im = imgRef.current;
-                if (!w || !im) return;
-                const wr = w.getBoundingClientRect();
-                const ir = im.getBoundingClientRect();
-                setBox({ x: ir.left - wr.left, y: ir.top - wr.top, w: ir.width, h: ir.height });
-              });
-            }}
-            className="max-h-[242px] max-w-[92%] select-none object-contain"
-            style={{ filter: "drop-shadow(3px 3px 0 var(--shadow-hard))" }}
-          />
-        ) : (
-          <div className="flex flex-col items-center gap-2 font-mono text-xs text-[var(--ink-soft)]">
-            <IconSpinner className="az-spin h-6 w-6" />
-            <span>MEMBACA GAMBAR…</span>
-          </div>
-        )}
-
-        {box && job.status !== "cutting" && job.imgW > 0 && (
-          <div
-            className="pointer-events-none absolute"
-            style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
-          >
+        <div ref={scrollRef} className="az-checker az-scroll h-full w-full overflow-auto">
+          <div className="flex min-h-full min-w-full">
             <div
-              className="absolute inset-0 border-2"
-              style={{ borderColor: "var(--grid-line)" }}
-            />
-            {job.cols > 1 &&
-              Array.from({ length: job.cols - 1 }, (_, i) => (
-                <div
-                  key={`v${i}`}
-                  className="absolute bottom-0 top-0 w-px"
-                  style={{ left: `${((i + 1) / job.cols) * 100}%`, background: "var(--grid-line)" }}
+              ref={stageRef}
+              className="relative shrink-0"
+              style={{ width: job.img ? dispW : 240, height: job.img ? dispH : 200, margin: "auto" }}
+            >
+              {job.img ? (
+                <img
+                  src={job.url}
+                  alt={job.name}
+                  draggable={false}
+                  className="h-full w-full select-none object-contain"
+                  style={{ filter: "drop-shadow(3px 3px 0 var(--shadow-hard))" }}
+                  onDoubleClick={() => {
+                    sfx.tick();
+                    setZoom((z) => (z > 1.05 ? 1 : 2.5));
+                  }}
                 />
-              ))}
-            {job.rows > 1 &&
-              Array.from({ length: job.rows - 1 }, (_, i) => (
+              ) : (
+                <div className="flex h-full w-full items-center justify-center gap-2 font-mono text-xs text-[var(--ink-soft)]">
+                  <IconSpinner className="az-spin h-6 w-6" />
+                  <span>MEMBACA GAMBAR…</span>
+                </div>
+              )}
+
+              {/* ---- draggable grid overlay ---- */}
+              {job.img && job.status !== "cutting" && (
                 <div
-                  key={`h${i}`}
-                  className="absolute left-0 right-0 h-px"
-                  style={{ top: `${((i + 1) / job.rows) * 100}%`, background: "var(--grid-line)" }}
-                />
-              ))}
-            {showNumbers &&
-              total <= 360 &&
-              Array.from({ length: total }, (_, i) => {
-                const r = Math.floor(i / job.cols);
-                const c = i % job.cols;
-                return (
-                  <span
-                    key={`n${i}`}
-                    className="az-num absolute font-mono text-[9px] font-bold"
-                    style={{
-                      left: `${(c / job.cols) * 100}%`,
-                      top: `${(r / job.rows) * 100}%`,
-                      padding: "1px 3px",
-                      color: "var(--ink)",
-                      background: "var(--surface-2)",
-                    }}
-                  >
-                    {i + 1}
-                  </span>
-                );
-              })}
-            {hover && canHover && (
-              <div
-                className="absolute border-2"
-                style={{
-                  left: `${(hover.c / job.cols) * 100}%`,
-                  top: `${(hover.r / job.rows) * 100}%`,
-                  width: `${(1 / job.cols) * 100}%`,
-                  height: `${(1 / job.rows) * 100}%`,
-                  borderColor: "var(--accent)",
-                  background: "var(--accent-soft)",
-                }}
-              />
-            )}
+                  ref={overlayRef}
+                  onPointerDown={onOverlayDown}
+                  onPointerMove={onOverlayMove}
+                  onPointerUp={endDrag}
+                  onPointerCancel={endDrag}
+                  onPointerLeave={() => setHover(null)}
+                  className="absolute inset-0 z-[5] touch-none select-none"
+                  style={{ cursor: dragging ? "grabbing" : "crosshair" }}
+                  role="presentation"
+                >
+                  <div
+                    className="pointer-events-none absolute inset-0 border-2"
+                    style={{ borderColor: "var(--grid-line)" }}
+                  />
+
+                  {/* vertical dividers + handles */}
+                  {job.cols > 1 &&
+                    colP.slice(1, -1).map((f, i) => (
+                      <div
+                        key={`v${i}`}
+                        className="pointer-events-none absolute top-0 bottom-0 flex -translate-x-1/2 items-center justify-center"
+                        style={{ left: `${f * 100}%`, width: showHandles ? 16 : 4 }}
+                      >
+                        <div
+                          className="h-full w-[1.5px]"
+                          style={{
+                            background: "var(--grid-line)",
+                            opacity: dragging && !showHandles ? 1 : 0.9,
+                          }}
+                        />
+                        {showHandles && (
+                          <div
+                            className="absolute h-3 w-3 rotate-45 border-2 bg-[var(--menu)]"
+                            style={{ borderColor: "var(--accent)" }}
+                          />
+                        )}
+                      </div>
+                    ))}
+
+                  {/* horizontal dividers + handles */}
+                  {job.rows > 1 &&
+                    rowP.slice(1, -1).map((f, i) => (
+                      <div
+                        key={`h${i}`}
+                        className="pointer-events-none absolute left-0 right-0 flex -translate-y-1/2 items-center justify-center"
+                        style={{ top: `${f * 100}%`, height: showHandles ? 16 : 4 }}
+                      >
+                        <div
+                          className="h-[1.5px] w-full"
+                          style={{ background: "var(--grid-line)", opacity: 0.9 }}
+                        />
+                        {showHandles && (
+                          <div
+                            className="absolute h-3 w-3 rotate-45 border-2 bg-[var(--menu)]"
+                            style={{ borderColor: "var(--accent)" }}
+                          />
+                        )}
+                      </div>
+                    ))}
+
+                  {/* hovered block highlight */}
+                  {hover && !dragging && (
+                    <div
+                      className="pointer-events-none absolute border-2"
+                      style={{
+                        left: `${colP[hover.c] * 100}%`,
+                        top: `${rowP[hover.r] * 100}%`,
+                        width: `${(colP[hover.c + 1] - colP[hover.c]) * 100}%`,
+                        height: `${(rowP[hover.r + 1] - rowP[hover.r]) * 100}%`,
+                        borderColor: "var(--accent)",
+                        background: "var(--accent-soft)",
+                      }}
+                    />
+                  )}
+
+                  {/* cell numbers */}
+                  {showNumbers &&
+                    total <= 360 &&
+                    Array.from({ length: total }, (_, i) => {
+                      const r = Math.floor(i / job.cols);
+                      const c = i % job.cols;
+                      return (
+                        <span
+                          key={`n${i}`}
+                          className="az-num pointer-events-none absolute font-mono text-[9px] font-bold"
+                          style={{
+                            left: `${colP[c] * 100}%`,
+                            top: `${rowP[r] * 100}%`,
+                            padding: "1px 3px",
+                            color: "var(--ink)",
+                            background: "var(--surface-2)",
+                          }}
+                        >
+                          {i + 1}
+                        </span>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* zoom controls */}
+        <div className="absolute right-2.5 top-2 z-20 flex items-center gap-1 border border-[var(--line-strong)] bg-[var(--menu)] px-1.5 py-1 font-mono text-[10px]">
+          <button
+            type="button"
+            onClick={() => setZoomStep(-1)}
+            disabled={zoom <= ZOOM_MIN}
+            className="az-icon-btn h-6 w-6 border-none shadow-none"
+            title="Zoom out"
+            aria-label="Zoom out"
+          >
+            <IconMinus className="h-3 w-3" />
+          </button>
+          <span className="az-num w-11 text-center font-bold text-[var(--ink)]">
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            type="button"
+            onClick={() => setZoomStep(1)}
+            disabled={zoom >= ZOOM_MAX}
+            className="az-icon-btn h-6 w-6 border-none shadow-none"
+            title="Zoom in"
+            aria-label="Zoom in"
+          >
+            <IconPlus className="h-3 w-3" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              sfx.tick();
+              setZoom(1);
+              scrollRef.current?.scrollTo({ left: 0, top: 0 });
+            }}
+            className="az-icon-btn h-6 w-6 border-none shadow-none"
+            title="Kembalikan zoom & posisi (100%)"
+            aria-label="Reset zoom"
+          >
+            <IconRefresh className="h-3 w-3" />
+          </button>
+        </div>
+
+        {/* hover readout */}
+        {hover && hoverSize && !dragging && (
+          <div className="pointer-events-none absolute bottom-2 left-3 z-20 border border-[var(--line-strong)] bg-[var(--menu)] px-2 py-0.5 font-mono text-[10px] text-[var(--ink)]">
+            B{hover.r + 1}·K{hover.c + 1} — POTONGAN {hoverSize.sw}×{hoverSize.sh}px →{" "}
+            <strong className="text-[var(--accent)]">
+              {hoverSize.w}×{hoverSize.h}px
+            </strong>
           </div>
         )}
 
-        {hover && canHover && (
-          <div className="pointer-events-none absolute bottom-2 left-3 border border-[var(--line-strong)] bg-[var(--menu)] px-2 py-0.5 font-mono text-[10px] text-[var(--ink)]">
-            BARIS {hover.r + 1} · KOLOM {hover.c + 1} ({outW}×{outH}px)
+        {dragging && (
+          <div className="pointer-events-none absolute bottom-2 left-3 z-20 border border-[var(--accent-line)] bg-[var(--menu)] px-2 py-0.5 font-mono text-[10px] font-bold text-[var(--accent)]">
+            MENGGESER BLOK — lepaskan untuk menerapkan
           </div>
         )}
 
+        {/* cutting lasers */}
         {cutting && (
-          <div className="absolute inset-0 overflow-hidden bg-[var(--overlay)]/40">
+          <div className="absolute inset-0 z-30 overflow-hidden bg-[var(--overlay)]/40">
             <div
               className="az-laser-v absolute left-0 right-0 h-[3px]"
               style={{ top: 0, background: "var(--accent)" }}
@@ -340,7 +654,7 @@ export default function JobCard(props: Props) {
         )}
 
         {cutting && (
-          <div className="absolute inset-x-0 bottom-0 h-[5px] bg-[var(--surface-2)]">
+          <div className="absolute inset-x-0 bottom-0 z-40 h-[5px] bg-[var(--surface-2)]">
             <div
               className="h-full transition-[width] duration-150"
               style={{ width: `${job.progress * 100}%`, background: "var(--accent)" }}
@@ -349,9 +663,30 @@ export default function JobCard(props: Props) {
         )}
       </div>
 
+      {/* drag + zoom hint strip */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line-strong)] bg-[var(--surface-2)] px-3.5 py-1.5 font-mono text-[10px] text-[var(--ink-soft)]">
+        <span>
+          SERET GARIS / BLOK UNTUK MENGGESER POTONGAN · GANDA-KLIK: ZOOM
+        </span>
+        <span className="flex items-center gap-2">
+          <span>CTRL+SCROLL: ZOOM</span>
+          <button
+            type="button"
+            onClick={() => {
+              sfx.click();
+              props.onUpdate(job.id, { colPos: null, rowPos: null });
+              toast("Posisi blok dikembalikan rata", "ok");
+            }}
+            disabled={!customGrid}
+            className="border border-[var(--line-strong)] px-1.5 py-0.5 font-bold text-[var(--accent)] transition hover:bg-[var(--accent)] hover:text-[var(--on-accent)] disabled:opacity-30"
+          >
+            RATAKAN BLOK
+          </button>
+        </span>
+      </div>
+
       {/* ---------------- controls ---------------- */}
       <div className="flex flex-1 flex-col gap-4 p-4">
-        {/* File name & Sync Grid */}
         <div className="flex flex-wrap items-center gap-2">
           <div className="az-input flex h-9 flex-1 items-center gap-2 px-3">
             <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--ink-soft)]">
@@ -374,7 +709,7 @@ export default function JobCard(props: Props) {
               setTimeout(() => setFlash(false), 250);
               props.onSyncGrid(job.id);
             }}
-            title="Terapkan ukuran grid ini ke semua gambar di meja potong"
+            title="Terapkan ukuran & posisi grid ini ke semua gambar"
             className={`az-btn az-btn-ghost h-9 px-3 font-mono text-[11px] uppercase tracking-wider ${flash ? "az-pop" : ""}`}
           >
             <IconSync className="h-3.5 w-3.5" />
@@ -385,8 +720,16 @@ export default function JobCard(props: Props) {
         {/* Steppers & Presets 1x1 .. 100x100 */}
         <div className="space-y-2.5">
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-            <Stepper label="Kolom" value={job.cols} onChange={(v) => props.onUpdate(job.id, { cols: v })} />
-            <Stepper label="Baris" value={job.rows} onChange={(v) => props.onUpdate(job.id, { rows: v })} />
+            <Stepper
+              label="Kolom"
+              value={job.cols}
+              onChange={(v) => props.onUpdate(job.id, { cols: v, colPos: null })}
+            />
+            <Stepper
+              label="Baris"
+              value={job.rows}
+              onChange={(v) => props.onUpdate(job.id, { rows: v, rowPos: null })}
+            />
           </div>
 
           <div className="flex flex-wrap items-center gap-1">
@@ -401,7 +744,12 @@ export default function JobCard(props: Props) {
                   type="button"
                   onClick={() => {
                     sfx.click();
-                    props.onUpdate(job.id, { cols: n, rows: n });
+                    props.onUpdate(job.id, {
+                      cols: n,
+                      rows: n,
+                      colPos: null,
+                      rowPos: null,
+                    });
                   }}
                   className={`az-num border px-2 py-0.5 font-mono text-[11px] font-bold transition ${
                     active
@@ -426,7 +774,7 @@ export default function JobCard(props: Props) {
               </span>
             </div>
             <span className="az-num font-mono text-[11px] text-[var(--ink-faint)]">
-              Tiap keping: {baseCW}×{baseCH}px →{" "}
+              Blok pertama: {baseCW}×{baseCH}px →{" "}
               <strong className="text-[var(--accent)]">
                 {outW.toLocaleString()}×{outH.toLocaleString()}px
               </strong>
@@ -588,14 +936,19 @@ export default function JobCard(props: Props) {
                 {job.cells.length.toLocaleString()} KEPING TERPOTONG
               </span>
               <span className="az-num">
-                Total {fmtBytes(job.blobs ? job.blobs.reduce((s, b) => s + b.size, 0) : 0)} ·{" "}
-                {outW.toLocaleString()}×{outH.toLocaleString()}px
+                {job.cells.length > 0
+                  ? `${Math.min(...job.cells.map((c) => c.w))}–${Math.max(
+                      ...job.cells.map((c) => c.w),
+                    )}px lebar`
+                  : ""}{" "}
+                · total {fmtBytes(job.blobs ? job.blobs.reduce((s, b) => s + b.size, 0) : 0)}
               </span>
             </div>
             {job.cells.length > MAX_THUMBS && (
               <p className="font-mono text-[10px] text-[var(--accent)]">
                 Menampilkan {MAX_THUMBS} pratinjau pertama — seluruh{" "}
-                {job.cells.length.toLocaleString()} keping tetap masuk ke dalam arsip unduhan.
+                {job.cells.length.toLocaleString()} keping tetap masuk ke arsip unduhan
+                (pratinjau lainnya dibuka on-demand).
               </p>
             )}
             <div className="az-checker az-scroll grid max-h-60 grid-cols-6 gap-1.5 overflow-y-auto border border-[var(--line-strong)] p-2 sm:grid-cols-8">
@@ -607,16 +960,22 @@ export default function JobCard(props: Props) {
                     sfx.pop(i % 8);
                     props.onOpenCell(job.id, i);
                   }}
-                  title={`Klik untuk periksa ${cell.name}`}
+                  title={`Klik untuk periksa ${cell.name} (${cell.w}×${cell.h}px)`}
                   className="az-pop relative overflow-hidden border border-[var(--line)] transition hover:border-[var(--accent)]"
                   style={{ animationDelay: `${Math.min(i, 36) * 20}ms` }}
                 >
-                  <img
-                    src={cell.thumb}
-                    alt={cell.name}
-                    className="aspect-square w-full object-cover"
-                    loading="lazy"
-                  />
+                  {cell.thumb ? (
+                    <img
+                      src={cell.thumb}
+                      alt={cell.name}
+                      className="aspect-square w-full object-cover"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <span className="flex aspect-square w-full items-center justify-center bg-[var(--surface-3)] font-mono text-[9px] text-[var(--ink-soft)]">
+                      #{i + 1}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -625,4 +984,8 @@ export default function JobCard(props: Props) {
       </div>
     </article>
   );
+}
+
+function trim0(v: number): number {
+  return Math.max(0, v);
 }

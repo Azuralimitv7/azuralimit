@@ -1,4 +1,10 @@
 import JSZip from "jszip";
+import {
+  drawRegionHighRes,
+  encodeCanvasResilient,
+  resolveSafeCellSize,
+} from "./encoder";
+import { normalizePositions } from "./types";
 
 /* ---------------- helpers ---------------- */
 
@@ -10,8 +16,18 @@ export function sanitizeName(s: string): string {
 export async function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("Could not decode image"));
+    img.crossOrigin = "anonymous";
+    img.onload = async () => {
+      try {
+        if ("decode" in img && typeof img.decode === "function") {
+          await img.decode();
+        }
+      } catch {
+        /* ignore decode hint errors, onload already succeeded */
+      }
+      resolve(img);
+    };
+    img.onerror = () => reject(new Error("Gambar tidak dapat didekode"));
     img.src = src;
   });
 }
@@ -22,7 +38,6 @@ export function cellNames(
   rows: number,
   ext: string,
 ): string[] {
-  const total = cols * rows;
   const padR = String(rows).length;
   const padC = String(cols).length;
   const out: string[] = [];
@@ -33,7 +48,6 @@ export function cellNames(
       );
     }
   }
-  void total;
   return out;
 }
 
@@ -56,6 +70,10 @@ export interface CutOptions {
   img: HTMLImageElement;
   cols: number;
   rows: number;
+  /** custom divider fractions (cols+1 entries). null = evenly spaced */
+  colPos?: number[] | null;
+  /** custom divider fractions (rows+1 entries). null = evenly spaced */
+  rowPos?: number[] | null;
   trim: number; // % of each side
   scale: number; // multiplier
   format: "png" | "jpeg";
@@ -63,84 +81,174 @@ export interface CutOptions {
   onProgress?: (p: number) => void;
 }
 
+export interface CellSize {
+  w: number;
+  h: number;
+}
+
 export interface CutOutput {
   thumbs: string[];
   blobs: Blob[];
+  sizes: CellSize[];
   mime: string;
   ext: string;
   outW: number;
   outH: number;
+  clamped: boolean;
+  effectiveScale: number;
 }
 
 export async function cutGrid(opts: CutOptions): Promise<CutOutput> {
-  const { img, cols, rows, trim, scale, format, quality, onProgress } = opts;
+  const {
+    img,
+    cols,
+    rows,
+    colPos,
+    rowPos,
+    trim,
+    scale,
+    format,
+    quality,
+    onProgress,
+  } = opts;
   const t = Math.min(0.45, Math.max(0, trim) / 100);
   const x0 = img.width * t;
   const y0 = img.height * t;
   const iw = img.width * (1 - 2 * t);
   const ih = img.height * (1 - 2 * t);
-  const cw = iw / cols;
-  const ch = ih / rows;
-  const outW = Math.max(1, Math.round(cw * scale));
-  const outH = Math.max(1, Math.round(ch * scale));
+
+  // Divider fractions — custom (user-dragged) or evenly spaced
+  const colP = normalizePositions(colPos, cols);
+  const rowP = normalizePositions(rowPos, rows);
+
   const mime = format === "png" ? "image/png" : "image/jpeg";
   const ext = format === "png" ? "png" : "jpg";
 
-  const thumbs: string[] = new Array(cols * rows);
-  const blobs: Blob[] = new Array(cols * rows);
   const total = cols * rows;
+  const thumbs: string[] = new Array(total);
+  const blobs: Blob[] = new Array(total);
+  const sizes: CellSize[] = new Array(total);
+
+  // Reusable canvas pool (prevents GPU backing-store exhaustion across cells)
+  const workCanvas = document.createElement("canvas");
+  const stepCanvas = document.createElement("canvas");
+  const thumbCanvas = document.createElement("canvas");
+  const tctx = thumbCanvas.getContext("2d");
+
+  const TH = 128;
+  let clampedAny = false;
+  let effectiveScale = scale;
+  let firstW = 0;
+  let firstH = 0;
+
   let i = 0;
+  try {
+    for (let r = 0; r < rows; r++) {
+      const sy = y0 + rowP[r] * ih;
+      const sh = (rowP[r + 1] - rowP[r]) * ih;
+      for (let c = 0; c < cols; c++) {
+        const sx = x0 + colP[c] * iw;
+        const sw = (colP[c + 1] - colP[c]) * iw;
 
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const sx = x0 + c * cw;
-      const sy = y0 + r * ch;
-      const cv = document.createElement("canvas");
-      cv.width = outW;
-      cv.height = outH;
-      const cx = cv.getContext("2d");
-      if (!cx) throw new Error("Canvas 2D not supported");
-      if (format === "jpeg") {
-        cx.fillStyle = "#ffffff";
-        cx.fillRect(0, 0, outW, outH);
-      }
-      cx.imageSmoothingEnabled = true;
-      cx.imageSmoothingQuality = "high";
-      cx.drawImage(img, sx, sy, cw, ch, 0, 0, outW, outH);
+        // Per-cell safe output size (cells may differ when grid was dragged)
+        const safe = resolveSafeCellSize(sw, sh, scale);
+        if (safe.clamped) clampedAny = true;
+        effectiveScale = safe.effectiveScale;
+        let cellW = safe.outW;
+        let cellH = safe.outH;
 
-      // small preview thumbnail
-      const TH = 128;
-      const ts = Math.min(TH / outW, TH / outH, 1);
-      const tw = Math.max(1, Math.round(outW * ts));
-      const th = Math.max(1, Math.round(outH * ts));
-      const tcv = document.createElement("canvas");
-      tcv.width = tw;
-      tcv.height = th;
-      const tctx = tcv.getContext("2d");
-      if (tctx) {
-        tctx.drawImage(cv, 0, 0, tw, th);
-        thumbs[i] = tcv.toDataURL("image/png");
-      } else {
-        thumbs[i] = "";
-      }
+        if (workCanvas.width !== cellW || workCanvas.height !== cellH) {
+          workCanvas.width = cellW;
+          workCanvas.height = cellH;
+        }
+        const cx = workCanvas.getContext("2d");
+        if (!cx) throw new Error("Canvas 2D tidak didukung di browser ini");
 
-      const blob: Blob = await new Promise((res, rej) =>
-        cv.toBlob(
-          (b) => (b ? res(b) : rej(new Error("Encoding failed"))),
+        drawRegionHighRes(
+          cx,
+          img,
+          sx,
+          sy,
+          sw,
+          sh,
+          cellW,
+          cellH,
+          format,
+          stepCanvas,
+        );
+
+        // Lightweight preview thumbnail for the first 64 cells
+        if (tctx && i < 64) {
+          const ts = Math.min(TH / cellW, TH / cellH, 1);
+          const tw = Math.max(1, Math.round(cellW * ts));
+          const th = Math.max(1, Math.round(cellH * ts));
+          if (thumbCanvas.width !== tw || thumbCanvas.height !== th) {
+            thumbCanvas.width = tw;
+            thumbCanvas.height = th;
+          }
+          tctx.clearRect(0, 0, tw, th);
+          tctx.imageSmoothingEnabled = true;
+          tctx.imageSmoothingQuality = "high";
+          tctx.drawImage(img, sx, sy, sw, sh, 0, 0, tw, th);
+          try {
+            thumbs[i] = thumbCanvas.toDataURL("image/jpeg", 0.82);
+          } catch {
+            thumbs[i] = "";
+          }
+        } else {
+          thumbs[i] = "";
+        }
+
+        const encoded = await encodeCanvasResilient(
+          workCanvas,
+          img,
+          sx,
+          sy,
+          sw,
+          sh,
           mime,
           quality,
-        ),
-      );
-      blobs[i] = blob;
-      i++;
-      if (i % 16 === 0 || i === total) {
-        onProgress?.(i / total);
-        await new Promise((r) => setTimeout(r, 0));
+          format,
+        );
+
+        blobs[i] = encoded.blob;
+        cellW = encoded.actualW;
+        cellH = encoded.actualH;
+        sizes[i] = { w: cellW, h: cellH };
+        if (i === 0) {
+          firstW = cellW;
+          firstH = cellH;
+        }
+
+        i++;
+        const heavy = cellW * cellH >= 400_000;
+        if (i % (heavy ? 1 : 12) === 0 || i === total) {
+          onProgress?.(i / total);
+          await new Promise((res) => setTimeout(res, 0));
+        }
       }
     }
+  } finally {
+    // Explicitly release GPU canvas memory immediately
+    workCanvas.width = 1;
+    workCanvas.height = 1;
+    stepCanvas.width = 1;
+    stepCanvas.height = 1;
+    thumbCanvas.width = 1;
+    thumbCanvas.height = 1;
   }
 
-  return { thumbs, blobs, mime, ext, outW, outH };
+  return {
+    thumbs,
+    blobs,
+    sizes,
+    mime,
+    ext,
+    outW: firstW,
+    outH: firstH,
+    clamped: clampedAny,
+    effectiveScale,
+  };
 }
 
 /* ---------------- archives ---------------- */
@@ -160,10 +268,10 @@ export async function packZip(
     for (const e of f.entries) root.file(e.name, e.blob);
   }
   return new Promise((resolve, reject) => {
-    zip.generateAsync(
-      { type: "blob", compression: "STORE" },
-      (meta) => onPct?.(meta.percent / 100),
-    )
+    zip
+      .generateAsync({ type: "blob", compression: "STORE" }, (meta) =>
+        onPct?.(meta.percent / 100),
+      )
       .then(resolve)
       .catch(reject);
   });
@@ -181,7 +289,5 @@ export function downloadBlob(blob: Blob, filename: string) {
 }
 
 export function archiveNameFor(base: string, format: "zip" | "rar"): string {
-  // RAR is a proprietary format with no browser encoder; we ship a fully
-  // compatible archive instead and surface this to the user in the UI.
   return `${sanitizeName(base)}${format === "rar" ? ".zip" : ".zip"}`;
 }
