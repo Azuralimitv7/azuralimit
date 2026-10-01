@@ -4,7 +4,7 @@ import {
   encodeCanvasResilient,
   resolveSafeCellSize,
 } from "./encoder";
-import { normalizePositions } from "./types";
+import { normalizePositions, type FreeRect, type LayoutMode } from "./types";
 
 /* ---------------- helpers ---------------- */
 
@@ -68,12 +68,16 @@ export function fmtBytes(n: number): string {
 
 export interface CutOptions {
   img: HTMLImageElement;
+  /** Layout mode: uniform/free (cols+rows grid) or freeform (overlapping rects) */
+  layout?: LayoutMode;
   cols: number;
   rows: number;
   /** custom divider fractions (cols+1 entries). null = evenly spaced */
   colPos?: number[] | null;
   /** custom divider fractions (rows+1 entries). null = evenly spaced */
   rowPos?: number[] | null;
+  /** freeform rectangles (fractions of image). */
+  overlays?: FreeRect[];
   trim: number; // % of each side
   scale: number; // multiplier
   format: "png" | "jpeg";
@@ -98,13 +102,23 @@ export interface CutOutput {
   effectiveScale: number;
 }
 
+interface CellSpec {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  name: string;
+}
+
 export async function cutGrid(opts: CutOptions): Promise<CutOutput> {
   const {
     img,
+    layout = "uniform",
     cols,
     rows,
     colPos,
     rowPos,
+    overlays,
     trim,
     scale,
     format,
@@ -117,25 +131,47 @@ export async function cutGrid(opts: CutOptions): Promise<CutOutput> {
   const iw = img.width * (1 - 2 * t);
   const ih = img.height * (1 - 2 * t);
 
-  // Divider fractions — custom (user-dragged) or evenly spaced
-  const colP = normalizePositions(colPos, cols);
-  const rowP = normalizePositions(rowPos, rows);
-
   const mime = format === "png" ? "image/png" : "image/jpeg";
   const ext = format === "png" ? "png" : "jpg";
 
-  const total = cols * rows;
+  /* Build the cell specs the user wants to cut */
+  let specs: CellSpec[];
+  if (layout === "freeform" && overlays && overlays.length > 0) {
+    specs = overlays.map((o) => ({
+      sx: x0 + o.x * iw,
+      sy: y0 + o.y * ih,
+      sw: o.w * iw,
+      sh: o.h * ih,
+      name: o.name || "",
+    }));
+  } else {
+    const colP = normalizePositions(colPos, cols);
+    const rowP = normalizePositions(rowPos, rows);
+    specs = [];
+    for (let r = 0; r < rows; r++) {
+      const sy = y0 + rowP[r] * ih;
+      const sh = (rowP[r + 1] - rowP[r]) * ih;
+      for (let c = 0; c < cols; c++) {
+        const sx = x0 + colP[c] * iw;
+        const sw = (colP[c + 1] - colP[c]) * iw;
+        specs.push({ sx, sy, sw, sh, name: "" });
+      }
+    }
+  }
+
+  const total = specs.length;
+  if (total === 0) throw new Error("Tidak ada blok untuk dipotong");
+
   const thumbs: string[] = new Array(total);
   const blobs: Blob[] = new Array(total);
   const sizes: CellSize[] = new Array(total);
 
-  // Reusable canvas pool (prevents GPU backing-store exhaustion across cells)
+  // Reusable canvas pool
   const workCanvas = document.createElement("canvas");
   const stepCanvas = document.createElement("canvas");
   const thumbCanvas = document.createElement("canvas");
   const tctx = thumbCanvas.getContext("2d");
 
-  const TH = 128;
   let clampedAny = false;
   let effectiveScale = scale;
   let firstW = 0;
@@ -143,93 +179,74 @@ export async function cutGrid(opts: CutOptions): Promise<CutOutput> {
 
   let i = 0;
   try {
-    for (let r = 0; r < rows; r++) {
-      const sy = y0 + rowP[r] * ih;
-      const sh = (rowP[r + 1] - rowP[r]) * ih;
-      for (let c = 0; c < cols; c++) {
-        const sx = x0 + colP[c] * iw;
-        const sw = (colP[c + 1] - colP[c]) * iw;
+    for (let r = 0; r < total; r++) {
+      const { sx, sy, sw, sh } = specs[r];
+      const safe = resolveSafeCellSize(Math.max(0.001, sw), Math.max(0.001, sh), scale);
+      if (safe.clamped) clampedAny = true;
+      effectiveScale = safe.effectiveScale;
+      let cellW = safe.outW;
+      let cellH = safe.outH;
 
-        // Per-cell safe output size (cells may differ when grid was dragged)
-        const safe = resolveSafeCellSize(sw, sh, scale);
-        if (safe.clamped) clampedAny = true;
-        effectiveScale = safe.effectiveScale;
-        let cellW = safe.outW;
-        let cellH = safe.outH;
+      if (workCanvas.width !== cellW || workCanvas.height !== cellH) {
+        workCanvas.width = cellW;
+        workCanvas.height = cellH;
+      }
+      const cx = workCanvas.getContext("2d");
+      if (!cx) throw new Error("Canvas 2D tidak didukung di browser ini");
 
-        if (workCanvas.width !== cellW || workCanvas.height !== cellH) {
-          workCanvas.width = cellW;
-          workCanvas.height = cellH;
+      drawRegionHighRes(cx, img, sx, sy, sw, sh, cellW, cellH, format, stepCanvas);
+
+      // Lightweight preview thumbnail for the first 64 cells
+      if (tctx && i < 64) {
+        const ts = Math.min(TH / cellW, TH / cellH, 1);
+        const tw = Math.max(1, Math.round(cellW * ts));
+        const th = Math.max(1, Math.round(cellH * ts));
+        if (thumbCanvas.width !== tw || thumbCanvas.height !== th) {
+          thumbCanvas.width = tw;
+          thumbCanvas.height = th;
         }
-        const cx = workCanvas.getContext("2d");
-        if (!cx) throw new Error("Canvas 2D tidak didukung di browser ini");
-
-        drawRegionHighRes(
-          cx,
-          img,
-          sx,
-          sy,
-          sw,
-          sh,
-          cellW,
-          cellH,
-          format,
-          stepCanvas,
-        );
-
-        // Lightweight preview thumbnail for the first 64 cells
-        if (tctx && i < 64) {
-          const ts = Math.min(TH / cellW, TH / cellH, 1);
-          const tw = Math.max(1, Math.round(cellW * ts));
-          const th = Math.max(1, Math.round(cellH * ts));
-          if (thumbCanvas.width !== tw || thumbCanvas.height !== th) {
-            thumbCanvas.width = tw;
-            thumbCanvas.height = th;
-          }
-          tctx.clearRect(0, 0, tw, th);
-          tctx.imageSmoothingEnabled = true;
-          tctx.imageSmoothingQuality = "high";
-          tctx.drawImage(img, sx, sy, sw, sh, 0, 0, tw, th);
-          try {
-            thumbs[i] = thumbCanvas.toDataURL("image/jpeg", 0.82);
-          } catch {
-            thumbs[i] = "";
-          }
-        } else {
+        tctx.clearRect(0, 0, tw, th);
+        tctx.imageSmoothingEnabled = true;
+        tctx.imageSmoothingQuality = "high";
+        tctx.drawImage(img, sx, sy, sw, sh, 0, 0, tw, th);
+        try {
+          thumbs[i] = thumbCanvas.toDataURL("image/jpeg", 0.82);
+        } catch {
           thumbs[i] = "";
         }
+      } else {
+        thumbs[i] = "";
+      }
 
-        const encoded = await encodeCanvasResilient(
-          workCanvas,
-          img,
-          sx,
-          sy,
-          sw,
-          sh,
-          mime,
-          quality,
-          format,
-        );
+      const encoded = await encodeCanvasResilient(
+        workCanvas,
+        img,
+        sx,
+        sy,
+        sw,
+        sh,
+        mime,
+        quality,
+        format,
+      );
 
-        blobs[i] = encoded.blob;
-        cellW = encoded.actualW;
-        cellH = encoded.actualH;
-        sizes[i] = { w: cellW, h: cellH };
-        if (i === 0) {
-          firstW = cellW;
-          firstH = cellH;
-        }
+      blobs[i] = encoded.blob;
+      cellW = encoded.actualW;
+      cellH = encoded.actualH;
+      sizes[i] = { w: cellW, h: cellH };
+      if (i === 0) {
+        firstW = cellW;
+        firstH = cellH;
+      }
 
-        i++;
-        const heavy = cellW * cellH >= 400_000;
-        if (i % (heavy ? 1 : 12) === 0 || i === total) {
-          onProgress?.(i / total);
-          await new Promise((res) => setTimeout(res, 0));
-        }
+      i++;
+      const heavy = cellW * cellH >= 400_000;
+      if (i % (heavy ? 1 : 12) === 0 || i === total) {
+        onProgress?.(i / total);
+        await new Promise((res) => setTimeout(res, 0));
       }
     }
   } finally {
-    // Explicitly release GPU canvas memory immediately
     workCanvas.width = 1;
     workCanvas.height = 1;
     stepCanvas.width = 1;
@@ -250,6 +267,8 @@ export async function cutGrid(opts: CutOptions): Promise<CutOutput> {
     effectiveScale,
   };
 }
+
+const TH = 128;
 
 /* ---------------- archives ---------------- */
 

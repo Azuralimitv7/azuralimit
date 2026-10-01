@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Job } from "@/lib/types";
+import type { Job, LayoutMode } from "@/lib/types";
 import { uid } from "@/lib/types";
 import {
   cellNames,
@@ -19,6 +19,8 @@ import DonationSection from "./DonationSection";
 import ParticlesCanvas from "./Particles";
 import Toasts, { toast } from "./Toasts";
 import ThemeSettings from "./ThemeSettings";
+import CelebrationBanner from "./CelebrationBanner";
+import CelebrationAmbient from "./CelebrationAmbient";
 import { useAzura } from "./ThemeProvider";
 import {
   IconBox,
@@ -53,8 +55,10 @@ function newJob(file: File): Job {
     imgH: 0,
     cols: 4,
     rows: 4,
+    layout: "uniform" as LayoutMode,
     colPos: null,
     rowPos: null,
+    overlays: [],
     trim: 0,
     scale: 1,
     format: "png",
@@ -221,6 +225,13 @@ export default function Studio() {
 
   /* ---------------- cutting ---------------- */
 
+  const totalCells = useMemo(() => {
+    return jobs.reduce((s, j) => {
+      if (j.layout === "freeform") return s + j.overlays.length;
+      return s + j.cols * j.rows;
+    }, 0);
+  }, [jobs]);
+
   const cutJob = useCallback(
     async (id: string) => {
       const j = jobs.find((x) => x.id === id);
@@ -230,17 +241,26 @@ export default function Studio() {
       try {
         const out = await cutGrid({
           img: j.img,
+          layout: j.layout,
           cols: j.cols,
           rows: j.rows,
           colPos: j.colPos,
           rowPos: j.rowPos,
+          overlays: j.layout === "freeform" ? j.overlays : undefined,
           trim: j.trim,
           scale: j.scale,
           format: j.format,
           quality: j.quality,
           onProgress: (p) => updateJob(id, { progress: p }),
         });
-        const names = cellNames(sanitizeName(j.name), j.cols, j.rows, out.ext);
+        const totalCells = j.layout === "freeform" ? j.overlays.length : j.cols * j.rows;
+        const names =
+          j.layout === "freeform"
+            ? j.overlays.map(
+                (o, i) =>
+                  `${sanitizeName(j.name)}_${i + 1}.${out.ext}`,
+              )
+            : cellNames(sanitizeName(j.name), j.cols, j.rows, out.ext);
         const varied =
           out.sizes.length > 1 &&
           out.sizes.some((s) => s.w !== out.outW || s.h !== out.outH);
@@ -264,14 +284,15 @@ export default function Studio() {
         const sizeNote = varied
           ? `ukuran bervariasi per blok (keping pertama ${out.outW}×${out.outH}px)`
           : `${out.outW}×${out.outH}px`;
+        const modeNote = j.layout === "freeform" ? " (mode freeform)" : "";
         if (out.clamped) {
           toast(
-            `${j.name}: ${names.length.toLocaleString()} keping selesai (${sizeNote} — batas aman resolusi tinggi)`,
+            `${j.name}: ${names.length.toLocaleString()} keping selesai${modeNote} (${sizeNote} — batas aman resolusi tinggi)`,
             "ok",
           );
         } else {
           toast(
-            `${j.name}: ${names.length.toLocaleString()} keping selesai dipotong (${sizeNote})`,
+            `${j.name}: ${names.length.toLocaleString()} keping selesai dipotong${modeNote} (${sizeNote})`,
             "ok",
           );
         }
@@ -307,22 +328,33 @@ export default function Studio() {
       const src = jobs.find((j) => j.id === srcId);
       if (!src) return;
       setJobs((js) =>
-        js.map((j) =>
-          j.id === srcId
-            ? j
-            : {
-                ...j,
-                cols: src.cols,
-                rows: src.rows,
-                colPos: src.colPos ? [...src.colPos] : null,
-                rowPos: src.rowPos ? [...src.rowPos] : null,
-              },
-        ),
+        js.map((j) => {
+          if (j.id === srcId) return j;
+          // Only propagate state relevant to the destination layout
+          if (src.layout === "freeform") {
+            return {
+              ...j,
+              layout: "freeform",
+              cols: j.layout === "freeform" ? j.cols : 1,
+              rows: j.layout === "freeform" ? j.rows : 1,
+              overlays: src.overlays.map((o) => ({ ...o, id: uid() })),
+            };
+          }
+          return {
+            ...j,
+            layout: src.layout,
+            cols: src.cols,
+            rows: src.rows,
+            colPos: src.colPos ? [...src.colPos] : null,
+            rowPos: src.rowPos ? [...src.rowPos] : null,
+          };
+        }),
       );
-      toast(
-        `Grid ${src.cols}×${src.rows}${src.colPos ? " (posisi blok disalin)" : ""} disamakan ke seluruh lembar`,
-        "ok",
-      );
+      const note =
+        src.layout === "freeform"
+          ? `Mode freeform (${src.overlays.length} blok) disalin ke seluruh lembar`
+          : `Grid ${src.cols}×${src.rows}${src.colPos ? " (posisi blok disalin)" : ""} disamakan ke seluruh lembar`;
+      toast(note, "ok");
     },
     [jobs],
   );
@@ -440,14 +472,13 @@ export default function Studio() {
   /* ---------------- derived ---------------- */
 
   const stats = useMemo(() => {
-    const cells = jobs.reduce((s, j) => s + j.cols * j.rows, 0);
     const size = jobs.reduce(
       (s, j) => s + (j.blobs ? j.blobs.reduce((a, b) => a + b.size, 0) : 0),
       0,
     );
     const ready = jobs.filter((j) => j.status === "done").length;
-    return { cells, size, ready };
-  }, [jobs]);
+    return { cells: totalCells, size, ready };
+  }, [jobs, totalCells]);
 
   const activeTheme = themeById(settings.theme);
   const lbJob = lightbox ? jobs.find((j) => j.id === lightbox.jobId) : null;
@@ -478,6 +509,7 @@ export default function Studio() {
 
   return (
     <div className="relative min-h-screen">
+      <CelebrationAmbient />
       <ParticlesCanvas />
       <Toasts />
       <ThemeSettings open={showSettings} onClose={() => setShowSettings(false)} />
@@ -514,8 +546,8 @@ export default function Studio() {
 
           {/* Primary Navigation Tabs: Meja Potong vs Halaman Donasi */}
           <nav
-            aria-label="Navigasi Utama Studio"
-            className="flex items-center gap-1.5"
+              aria-label="Navigasi Utama Studio"
+              className="flex max-w-full flex-wrap items-center gap-1.5"
           >
             <button
               type="button"
@@ -560,11 +592,11 @@ export default function Studio() {
                 setShowSettings(true);
               }}
               title="Buka Rak Pengaturan Tema & Suara"
-              className="az-btn az-btn-ghost h-9 px-3 font-mono text-xs"
+              className="az-btn az-btn-ghost h-9 max-w-[calc(100vw-100px)] px-3 font-mono text-xs sm:max-w-[330px]"
             >
               <IconSliders className="h-3.5 w-3.5 text-[var(--accent)]" />
               <span className="hidden sm:inline">Tema:</span>
-              <span className="font-bold text-[var(--accent)]">{activeTheme.name}</span>
+              <span className="min-w-0 truncate font-bold text-[var(--accent)]">{activeTheme.name}</span>
             </button>
 
             <button
@@ -589,6 +621,7 @@ export default function Studio() {
 
       {/* ---------------- Main Workbench Content ---------------- */}
       <main className="mx-auto max-w-[1440px] space-y-7 px-4 py-6 sm:px-6">
+        <CelebrationBanner onOpenThemes={() => setShowSettings(true)} />
         {activeTab === "donasi" ? (
           <div className="az-fade-up space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3 border border-[var(--line-strong)] bg-[var(--surface)] px-4 py-3">

@@ -1,338 +1,150 @@
 "use client";
 
-import { useEffect } from "react";
-import {
-  ACCENTS,
-  PATTERNS,
-  THEMES,
-  themeById,
-  type Pattern,
-} from "@/lib/theme";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ACCENTS, HOLIDAY_THEMES, PATTERNS, STUDIO_THEMES, THEMES, alphaHex, inkOn, themeById, type ThemeDef } from "@/lib/theme";
+import { CALENDAR_SOURCE, CALENDAR_YEAR, CATEGORY_LABELS, celebrationAssets, occasionStatus, searchCelebrations, type CelebrationCategory } from "@/lib/celebrations";
 import { sfx } from "@/lib/sound";
 import { useAzura } from "./ThemeProvider";
-import {
-  IconBolt,
-  IconCheck,
-  IconRefresh,
-  IconSpark,
-  IconSound,
-  IconMute,
-  IconX,
-} from "./Icons";
+import CelebrationArtwork from "./CelebrationArtwork";
+import { IconCheck, IconDownload, IconRefresh, IconSliders, IconX } from "./Icons";
 
-function Row({
-  title,
-  hint,
-  children,
-}: {
-  title: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="az-nested p-4">
-      <div className="mb-3">
-        <h3 className="font-mono text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-          {title}
-        </h3>
-        {hint && <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-faint)]">{hint}</p>}
-      </div>
-      {children}
-    </div>
-  );
+type Tab = "holiday" | "studio" | "favorites" | "preferences";
+const MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+
+function Bookmark({ filled = false }: { filled?: boolean }) {
+  return <svg viewBox="0 0 24 24" width="16" height="16" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M6 4h12v17l-6-4-6 4V4Z" /></svg>;
 }
-
-function Toggle({
-  on,
-  onChange,
-  label,
-  desc,
-  iconOn,
-  iconOff,
-}: {
-  on: boolean;
-  onChange: (v: boolean) => void;
-  label: string;
-  desc: string;
-  iconOn: React.ReactNode;
-  iconOff: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        sfx.snap();
-        onChange(!on);
-      }}
-      className="flex w-full items-center gap-3 border border-[var(--line-strong)] bg-[var(--surface)] px-3.5 py-2.5 text-left transition hover:border-[var(--accent-line)]"
-    >
-      <span
-        className={`flex h-8 w-8 shrink-0 items-center justify-center border ${
-          on
-            ? "border-[var(--line-strong)] bg-[var(--accent)] text-[var(--on-accent)]"
-            : "border-[var(--line)] text-[var(--ink-faint)]"
-        }`}
-      >
-        {on ? iconOn : iconOff}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-xs font-bold text-[var(--ink)]">{label}</span>
-        <span className="block text-[11px] leading-snug text-[var(--ink-faint)]">{desc}</span>
-      </span>
-      <span className="border border-[var(--line-strong)] bg-[var(--surface-2)] px-2 py-0.5 font-mono text-[10px] font-bold text-[var(--ink)]">
-        {on ? "AKTIF" : "MATI"}
-      </span>
-    </button>
-  );
+function Toggle({ on, onChange, label, hint }: { on: boolean; onChange: (value: boolean) => void; label: string; hint: string }) {
+  return <button type="button" role="switch" aria-checked={on} aria-label={label} onClick={() => { sfx.snap(); onChange(!on); }} className="festival-preference-toggle">
+    <span><strong>{label}</strong><small>{hint}</small></span>
+    <span className="festival-switch" data-on={on}><span /></span>
+  </button>;
 }
 
 export default function ThemeSettings({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { settings, set, reset } = useAzura();
+  const { settings, set, reset, chooseTheme, toggleFavorite, reducedMotion } = useAzura();
+  const [tab, setTab] = useState<Tab>("holiday");
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<CelebrationCategory | "all">("all");
+  const [month, setMonth] = useState("all");
+  const [onlyHolidays, setOnlyHolidays] = useState(false);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
 
+  // Keyboard focus stays in the drawer; close restores the original trigger.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const original = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialogRef.current?.querySelector<HTMLButtonElement>('[aria-label="Tutup pengaturan"]')?.focus({ preventScroll: true });
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeRef.current(); }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, select, a[href], summary') || []).filter((el) => el.getClientRects().length > 0);
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    document.addEventListener("keydown", keydown, true);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener("keydown", keydown, true);
+      if (original?.isConnected) original.focus({ preventScroll: true });
+    };
+  }, [open]);
+
+  const active = themeById(settings.theme);
+  const visible = useMemo(() => {
+    if (tab === "holiday") {
+      const matches = new Set(searchCelebrations(query, category).map((entry) => entry.id));
+      return HOLIDAY_THEMES.filter((theme) => matches.has(theme.id) && (!onlyHolidays || theme.celebration!.nationalHoliday) && (month === "all" || theme.celebration!.dates2026.some((date) => Number(date.slice(5,7)) === Number(month))));
+    }
+    const list = tab === "favorites" ? THEMES.filter((theme) => settings.favorites.includes(theme.id)) : STUDIO_THEMES;
+    return list.filter((theme) => `${theme.name} ${theme.blurb}`.toLocaleLowerCase("id").includes(query.trim().toLocaleLowerCase("id")));
+  }, [tab, query, category, month, onlyHolidays, settings.favorites]);
+
+  const changeTab = (next: Tab) => {
+    sfx.tick(); setTab(next); setQuery(""); setCategory("all"); setMonth("all"); setOnlyHolidays(false);
+  };
+  const pick = (theme: ThemeDef) => { sfx.click(); chooseTheme(theme.id); };
 
   if (!open) return null;
-  const active = themeById(settings.theme);
+  const selectedArt = active.celebration || HOLIDAY_THEMES.find((theme) => theme.id === "idul-fitri")!.celebration!;
 
-  return (
-    <div
-      className="az-veil fixed inset-0 z-[85] flex justify-end bg-[var(--overlay)] backdrop-blur-sm"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Pengaturan Tampilan Studio"
-    >
-      <aside
-        className="az-slide-left az-scroll relative flex h-full w-full max-w-[440px] flex-col overflow-y-auto border-l-2 border-[var(--line-strong)] bg-[var(--menu)]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-[var(--line-strong)] bg-[var(--menu)] px-5 py-4">
-          <span className="flex h-9 w-9 items-center justify-center border border-[var(--line-strong)] bg-[var(--accent)] text-[var(--on-accent)]">
-            <IconSpark className="h-4 w-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <h2 className="font-display text-lg font-semibold leading-tight text-[var(--ink)]">
-              Rak Tema &amp; Suara Studio
-            </h2>
-            <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--ink-faint)]">
-              Tersimpan otomatis di browser ini
-            </p>
+  return <div className="festival-settings-backdrop az-veil" onClick={onClose}>
+    <aside ref={dialogRef} className="festival-settings az-slide-left" role="dialog" aria-modal="true" aria-labelledby="theme-drawer-title" tabIndex={-1} onClick={(event) => event.stopPropagation()}>
+      <header className="festival-settings-header">
+        <div className="festival-header-seal" aria-hidden="true"><IconSliders className="h-5 w-5" /></div>
+        <div><span className="festival-eyebrow">AZURALIMIT / RAK TEMA</span><h2 className="font-display" id="theme-drawer-title">Almanak Nusantara.</h2></div>
+        <button type="button" className="az-icon-btn h-9 w-9 shrink-0" onClick={onClose} aria-label="Tutup pengaturan"><IconX className="h-4 w-4" /></button>
+      </header>
+      <nav className="festival-tabs" aria-label="Bagian pengaturan">
+        {([['holiday','Hari besar',30],['studio','Studio',10],['favorites','Favorit',settings.favorites.length],['preferences','Preferensi',null]] as const).map(([id,label,count]) => <button key={id} type="button" aria-current={tab === id ? "page" : undefined} onClick={() => changeTab(id)}>{label}{count !== null && <span>{count}</span>}</button>)}
+      </nav>
+
+      <div className="festival-settings-scroll az-scroll">
+        {tab !== "preferences" && <>
+          {tab === "holiday" && <div className="festival-gallery-intro">
+            <div><span className="festival-eyebrow">DIGAMBAR DI STUDIO, BUKAN DIUNDUH</span><h3 className="font-display">Setiap perayaan,<br />punya ceritanya sendiri.</h3><p>30 ilustrasi orisinal. Palet hangat, motif khas, dan gerak yang tidak merebut perhatian.</p><span className="festival-offline-note"><span /> Semua aset SVG tersedia lokal</span></div>
+            <div className="festival-gallery-intro-art"><CelebrationArtwork celebration={selectedArt} animate={settings.motion && settings.decorations} priority /><span>{selectedArt.artTitle}</span></div>
+          </div>}
+          {tab === "studio" && <div className="festival-section-heading"><span className="festival-eyebrow">KOLEKSI INTI / 10 TEMA</span><h3 className="font-display">Warna untuk sehari-hari.</h3><p>Pilihan meja kerja klasik tanpa ornamen perayaan.</p></div>}
+          {tab === "favorites" && <div className="festival-section-heading"><span className="festival-eyebrow">DISIMPAN DI PERANGKAT INI</span><h3 className="font-display">Pilihan yang ingin kamu simpan.</h3><p>Klik penanda pada kartu untuk menambah atau menghapus favorit.</p></div>}
+
+          <div className="festival-gallery-controls">
+            <div className="festival-search-row">
+              <label className="festival-search"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10" cy="10" r="6.5" /><path d="m15 15 5 5" /></svg><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari Idulfitri, kemerdekaan, batik…" aria-label="Cari tema" />{query && <button type="button" aria-label="Hapus pencarian" onClick={() => setQuery("")}><IconX className="h-3.5 w-3.5" /></button>}</label>
+              {tab === "holiday" && <select className="festival-month" aria-label="Bulan perayaan" value={month} onChange={(event) => setMonth(event.target.value)}><option value="all">Semua bulan</option>{MONTHS.map((label,i) => <option key={label} value={i+1}>{label}</option>)}</select>}
+            </div>
+            {tab === "holiday" && <div className="festival-filters" aria-label="Kategori tema">
+              <button type="button" aria-pressed={category === "all"} onClick={() => setCategory("all")}>Semua</button>
+              {(Object.entries(CATEGORY_LABELS) as [CelebrationCategory,string][]).map(([id,label]) => <button type="button" key={id} aria-pressed={category === id} onClick={() => setCategory(id)}>{label}</button>)}
+            </div>}
+            <div className="festival-gallery-summary"><output aria-live="polite">{visible.length} tema{tab === "holiday" ? " dalam koleksi" : " tersedia"}</output>{tab === "holiday" && <label><input type="checkbox" checked={onlyHolidays} onChange={(event) => setOnlyHolidays(event.target.checked)} /> Hanya libur nasional</label>}</div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="az-icon-btn h-8 w-8"
-            aria-label="Tutup pengaturan"
-          >
-            <IconX className="h-4 w-4" />
-          </button>
-        </div>
 
-        <div className="flex flex-col gap-4 p-5">
-          <Row
-            title="10 Tema Meja Kerja"
-            hint="Diracik dari 10 warna palet resmi Azuralimit (6 tema gelap & 4 tema terang)."
-          >
-            <div className="grid grid-cols-2 gap-2.5">
-              {THEMES.map((t) => {
-                const on = settings.theme === t.id;
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => {
-                      sfx.click();
-                      set({ theme: t.id });
-                    }}
-                    title={t.blurb}
-                    className={`flex flex-col gap-2 border p-2.5 text-left transition ${
-                      on
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)] shadow-[2px_2px_0_var(--shadow-hard)]"
-                        : "border-[var(--line)] bg-[var(--surface)] hover:border-[var(--line-strong)]"
-                    }`}
-                  >
-                    <span
-                      className="flex h-11 w-full items-end gap-1 border border-black/20 p-1.5"
-                      style={{ background: t.swatch[0] }}
-                    >
-                      <span className="h-4 w-4 border border-white/20" style={{ background: t.swatch[1] }} />
-                      <span className="h-4 w-4 border border-white/20" style={{ background: t.swatch[2] }} />
-                      <span
-                        className="ml-auto px-1 font-mono text-[9px] font-bold uppercase"
-                        style={{ background: t.swatch[2], color: relInk(t.swatch[2]) }}
-                      >
-                        {t.mode === "dark" ? "GELAP" : "TERANG"}
-                      </span>
-                    </span>
-                    <span className="flex items-center justify-between gap-1.5">
-                      <span className="truncate font-mono text-[11px] font-bold text-[var(--ink)]">
-                        {t.name}
-                      </span>
-                      {on && <IconCheck className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />}
-                    </span>
-                  </button>
-                );
-              })}
+          {visible.length ? <div className="festival-theme-grid">
+            {visible.map((theme) => {
+              const isActive = settings.theme === theme.id;
+              const favorite = settings.favorites.includes(theme.id);
+              return <article className="festival-theme-card" key={theme.id} data-selected={isActive} data-theme-card={theme.id}>
+                <button type="button" className="festival-theme-pick" onClick={() => pick(theme)} aria-label={`Pakai tema ${theme.name}`} aria-pressed={isActive}>
+                  {theme.celebration ? <CelebrationArtwork celebration={theme.celebration} animate={false} /> : <div className="festival-studio-swatch" style={{ background: theme.swatch[0] }}><span style={{ background: theme.swatch[1] }} /><span style={{ background: theme.swatch[2] }} /><i style={{ color: inkOn(theme.swatch[0]) }}>Aa<span>01 / STUDIO</span></i></div>}
+                  <div className="festival-theme-card-copy"><span className="festival-card-meta">{theme.celebration ? theme.celebration.dateLabel : theme.mode === "light" ? "TEMA TERANG" : "TEMA GELAP"}</span><h4>{theme.name}</h4><p>{theme.celebration?.artTitle || theme.blurb}</p><span className="festival-card-bottom"><span className="festival-color-dots" aria-hidden="true">{theme.swatch.map((color,i) => <i key={i} style={{ background: color }} />)}</span><span>{isActive ? <><IconCheck className="h-3 w-3" /> Dipakai</> : "Pilih tema →"}</span></span></div>
+                </button>
+                <button type="button" className="festival-favorite" aria-label={`${favorite ? "Hapus" : "Simpan"} ${theme.name} ${favorite ? "dari" : "ke"} favorit`} aria-pressed={favorite} onClick={() => { sfx.tick(); toggleFavorite(theme.id); }}><Bookmark filled={favorite} /></button>
+              </article>;
+            })}
+          </div> : <div className="festival-no-results"><Bookmark /><h3 className="font-display">{tab === "favorites" ? "Belum ada tema di rak ini." : "Belum ada yang cocok."}</h3><p>{tab === "favorites" ? "Tandai tema kesukaanmu dari koleksi Hari besar atau Studio." : "Coba nama lain, ganti bulan, atau tampilkan semua kategori."}</p><button type="button" className="az-btn az-btn-ghost px-4 py-2 text-xs" onClick={() => changeTab("holiday")}>Lihat semua tema</button></div>}
+
+          <details className="festival-catalogue-note"><summary>Tentang kalender &amp; aset lokal</summary><p>Koleksi mencakup seluruh 16 momen libur nasional (17 hari pada {CALENDAR_YEAR}), 13 hari peringatan, dan suasana Ramadan. Hari peringatan bukan otomatis hari libur; cuti bersama mengikuti perayaannya dan tidak menjadi tema terpisah. Pilihan tema selalu manual.</p><p>Tanggal hari raya yang bergerak hanya ditampilkan untuk kalender {CALENDAR_YEAR}; bukan perhitungan untuk tahun lain. Acuan: <a href={CALENDAR_SOURCE} target="_blank" rel="noreferrer">pengumuman Kemenko PMK</a>. Referensi tidak perlu diakses untuk memakai tema.</p><p>Poster, ornamen, dan pola dibuat sebagai SVG lokal. Tidak ada CDN, emoji, pelacak, atau unduhan aset dari situs luar saat memilih tema.</p></details>
+        </>}
+
+        {tab === "preferences" && <div className="festival-preferences">
+          <div className="festival-section-heading"><span className="festival-eyebrow">SESUAIKAN DENGAN CARA KERJAMU</span><h3 className="font-display">Semarak, atau lebih tenang.</h3><p>Pengaturan diterapkan langsung, tanpa mengubah posisi dan hasil potongan gambar.</p></div>
+          <section><h4>Suasana latar perayaan</h4><p>Kembang api, lampion terbang, salju, dan konfeti yang disesuaikan tiap perayaan. Digambar lokal di canvas — tanpa video atau GIF dari luar.</p>
+            <div className="festival-fx-options" role="group" aria-label="Intensitas efek latar">
+              {([["meriah", "Meriah", "Pesta penuh: kembang api + hujan motif"], ["lembut", "Lembut", "Gerak pelan, jumlah partikel sedikit"], ["mati", "Mati", "Tanpa animasi latar"]] as const).map(([id, label, hint]) => (
+                <button key={id} type="button" aria-pressed={settings.fx === id} onClick={() => { sfx.tick(); set({ fx: id }); }}><strong>{label}</strong><small>{hint}</small></button>
+              ))}
             </div>
-          </Row>
-
-          <Row
-            title="Warna Aksen Kustom"
-            hint="Ganti warna tombol utama, garis potong grid, dan penanda aktif."
-          >
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  sfx.snap();
-                  set({ accent: null });
-                }}
-                className={`flex items-center gap-1.5 border px-2.5 py-1.5 font-mono text-[11px] font-bold transition ${
-                  settings.accent === null
-                    ? "border-[var(--line-strong)] bg-[var(--accent)] text-[var(--on-accent)]"
-                    : "border-[var(--line)] text-[var(--ink-faint)] hover:text-[var(--ink)]"
-                }`}
-              >
-                <IconRefresh className="h-3 w-3" />
-                Bawaan Tema
-              </button>
-              {ACCENTS.map((a) => {
-                const on = settings.accent === a.hex;
-                return (
-                  <button
-                    key={a.hex}
-                    type="button"
-                    onClick={() => {
-                      sfx.tick();
-                      set({ accent: a.hex });
-                    }}
-                    title={a.name}
-                    className={`relative h-8 w-8 border-2 transition hover:-translate-y-0.5 ${
-                      on ? "border-[var(--ink)]" : "border-black/30"
-                    }`}
-                    style={{ background: a.hex }}
-                  >
-                    {on && (
-                      <IconCheck
-                        className="absolute inset-0 m-auto h-4 w-4"
-                        style={{ color: relInk(a.hex) }}
-                      />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </Row>
-
-          <Row title="Tekstur Alas Meja" hint="Pola latar belakang di bawah meja potong.">
-            <div className="grid grid-cols-5 gap-1.5">
-              {PATTERNS.map((p) => {
-                const on = settings.pattern === p.id;
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => {
-                      sfx.tick();
-                      set({ pattern: p.id as Pattern });
-                    }}
-                    className={`flex flex-col items-center gap-1.5 border p-1.5 transition ${
-                      on
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                        : "border-[var(--line)] hover:border-[var(--line-strong)]"
-                    }`}
-                  >
-                    <span
-                      className="h-7 w-full border border-black/20"
-                      style={{
-                        background:
-                          p.id === "plain"
-                            ? active.swatch[0]
-                            : p.id === "aurora"
-                              ? `radial-gradient(circle at 70% 20%, ${active.swatch[1]}, ${active.swatch[0]})`
-                              : p.id === "dots"
-                                ? `radial-gradient(${hexA(active.swatch[2], 0.6)} 1px, transparent 1px) ${active.swatch[0]}`
-                                : p.id === "grid"
-                                  ? `linear-gradient(${hexA(active.swatch[2], 0.5)} 1px, transparent 1px) ${active.swatch[0]}`
-                                  : `repeating-linear-gradient(135deg, ${hexA(active.swatch[2], 0.5)} 0 1px, transparent 1px 6px) ${active.swatch[0]}`,
-                        backgroundSize: p.id === "dots" ? "6px 6px" : p.id === "grid" ? "7px 7px" : undefined,
-                      }}
-                    />
-                    <span className="font-mono text-[9px] font-bold uppercase text-[var(--ink-faint)]">
-                      {p.name.split(" ")[0]}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </Row>
-
-          <Row title="Suara & Efek" hint="Efek suara sintesis Web Audio dan partikel selebrasi.">
-            <div className="flex flex-col gap-2">
-              <Toggle
-                on={settings.sound}
-                onChange={(v) => set({ sound: v })}
-                label="Efek Suara Mekanis"
-                desc="Bunyi pisau potong, klik tombol, dan lonceng selesai"
-                iconOn={<IconSound className="h-4 w-4" />}
-                iconOff={<IconMute className="h-4 w-4" />}
-              />
-              <Toggle
-                on={settings.particles}
-                onChange={(v) => set({ particles: v })}
-                label="Semburan Konfeti"
-                desc="Partikel warna saat pemotongan atau salin alamat selesai"
-                iconOn={<IconSpark className="h-4 w-4" />}
-                iconOff={<IconSpark className="h-4 w-4" />}
-              />
-              <Toggle
-                on={settings.motion}
-                onChange={(v) => set({ motion: v })}
-                label="Animasi Antarmuka"
-                desc="Transisi laser potong dan indikator berkedip"
-                iconOn={<IconBolt className="h-4 w-4" />}
-                iconOff={<IconBolt className="h-4 w-4" />}
-              />
-            </div>
-          </Row>
-
-          <button
-            type="button"
-            onClick={() => {
-              sfx.click();
-              reset();
-            }}
-            className="az-btn az-btn-ghost h-10 w-full font-mono text-xs uppercase tracking-wider"
-          >
-            <IconRefresh className="h-4 w-4" />
-            Kembalikan Setelan Awal
-          </button>
-        </div>
-      </aside>
-    </div>
-  );
-}
-
-function hexA(hex: string, a: number): string {
-  const h = hex.replace("#", "");
-  const v = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  const n = parseInt(v, 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
-}
-function relInk(hex: string): string {
-  const h = hex.replace("#", "");
-  const n = parseInt(h.length === 3 ? h.split("").map((c) => c + c).join("") : h, 16);
-  const f = (c: number) => {
-    const s = c / 255;
-    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-  };
-  const L = 0.2126 * f((n >> 16) & 255) + 0.7152 * f((n >> 8) & 255) + 0.0722 * f(n & 255);
-  return L > 0.45 ? "#002147" : "#FFF6E4";
+          </section>
+          <section><h4>Dekorasi &amp; gerakan</h4>
+            <Toggle on={settings.decorations} onChange={(value) => set({ decorations: value })} label="Ilustrasi perayaan" hint="Banner bergambar, ornamen, dan animasi latar; matikan untuk meja yang ringkas." />
+            <Toggle on={settings.motion} onChange={(value) => set({ motion: value })} label="Animasi antarmuka" hint="Lampion berayun, kembang api meledak, dan ornamen melayang." />
+            {reducedMotion && <p className="festival-motion-notice">Perangkatmu meminta gerakan dikurangi. Animasi latar dan konfeti tidak dijalankan, meski sakelar aktif.</p>}
+            <Toggle on={settings.particles} onChange={(value) => set({ particles: value })} label="Konfeti selesai memotong" hint="Hanya saat aksi selesai; tidak ada partikel yang terus menghujani layar." />
+            <Toggle on={settings.sound} onChange={(value) => set({ sound: value })} label="Efek suara mekanis" hint="Suara sintetis lokal. Tidak ada musik atau berkas audio dari luar." />
+          </section>
+          <section><h4>Warna aksen</h4><p>Mengubah warna kontrol, bukan warna ilustrasi asli.</p><div className="festival-accent-options"><button type="button" onClick={() => set({ accent: null })} aria-pressed={settings.accent === null} className="az-btn az-btn-ghost px-3 py-2 text-xs">Palet asli tema</button>{ACCENTS.map((accent) => <button type="button" key={accent.hex} title={accent.name} aria-label={`Aksen ${accent.name}`} aria-pressed={settings.accent === accent.hex} onClick={() => { sfx.tick(); set({ accent: accent.hex }); }} style={{ background: accent.hex, color: inkOn(accent.hex) }}>{settings.accent === accent.hex && <IconCheck className="h-4 w-4" />}</button>)}</div></section>
+          <section><h4>Tekstur latar</h4><p>Motif SVG mengikuti perayaan. Pilih Polos bila ingin tanpa pola.</p><div className="festival-pattern-options">{PATTERNS.map((pattern) => <button type="button" key={pattern.id} onClick={() => set({ pattern: pattern.id })} aria-pressed={settings.pattern === pattern.id}><span style={{ backgroundColor: active.swatch[0], backgroundImage: pattern.id === "heritage" ? `url("${celebrationAssets(active.celebration?.id || "batik").pattern}")` : pattern.id === "plain" ? "none" : pattern.id === "dots" ? `radial-gradient(${alphaHex(active.swatch[2], .65)} 1px, transparent 1px)` : pattern.id === "beams" ? `repeating-linear-gradient(135deg, ${alphaHex(active.swatch[2], .4)} 0 1px, transparent 1px 8px)` : `linear-gradient(${alphaHex(active.swatch[2], .3)} 1px, transparent 1px),linear-gradient(90deg,${alphaHex(active.swatch[2], .3)} 1px,transparent 1px)`, backgroundSize: pattern.id === "heritage" ? "44px 44px" : "10px 10px" }} />{pattern.name}</button>)}</div></section>
+          {active.celebration && <section className="festival-original-download"><h4>Ilustrasi ini milik proyekmu.</h4><p>File SVG asli tersimpan di repositori, dapat diedit dan dipakai tanpa ketergantungan layanan gambar.</p><a href={celebrationAssets(active.id).poster} download={`azuralimit-${active.id}.svg`} className="az-btn az-btn-ghost px-3 py-2 text-xs"><IconDownload className="h-3.5 w-3.5" /> Unduh ilustrasi SVG</a></section>}
+          <button type="button" className="az-btn az-btn-ghost px-4 py-3 text-xs" onClick={() => { sfx.click(); reset(); }}><IconRefresh className="h-3.5 w-3.5" /> Kembalikan tampilan awal (favorit tetap disimpan)</button>
+        </div>}
+      </div>
+      <footer className="festival-settings-footer"><div><span className="festival-active-dot" /><span><small>SEDANG DIPAKAI</small><strong aria-live="polite">{active.name}</strong></span></div><button type="button" className="az-btn az-btn-primary px-5 py-2.5 text-xs" onClick={onClose}>Selesai <IconCheck className="h-3.5 w-3.5" /></button></footer>
+    </aside>
+  </div>;
 }
