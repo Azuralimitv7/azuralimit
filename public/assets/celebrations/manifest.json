@@ -1,0 +1,247 @@
+{
+  "version": 1,
+  "originalArtwork": true,
+  "count": 30,
+  "assets": [
+    {
+      "id": "tahun-baru",
+      "occasion": "Tahun Baru",
+      "motif": "Kembang api · rasi bintang",
+      "poster": "tahun-baru/poster.svg",
+      "ornament": "tahun-baru/motif.svg",
+      "pattern": "tahun-baru/pattern.svg"
+    },
+    {
+      "id": "isra-mikraj",
+      "occasion": "Isra Mikraj",
+      "motif": "Gerbang · bulan · bintang",
+      "poster": "isra-mikraj/poster.svg",
+      "ornament": "isra-mikraj/motif.svg",
+      "pattern": "isra-mikraj/pattern.svg"
+    },
+    {
+      "id": "imlek",
+      "occasion": "Tahun Baru Imlek",
+      "motif": "Lampion · bunga plum · simpul",
+      "poster": "imlek/poster.svg",
+      "ornament": "imlek/motif.svg",
+      "pattern": "imlek/pattern.svg"
+    },
+    {
+      "id": "ramadan",
+      "occasion": "Ramadan",
+      "motif": "Pelita · bulan sabit · lengkung",
+      "poster": "ramadan/poster.svg",
+      "ornament": "ramadan/motif.svg",
+      "pattern": "ramadan/pattern.svg"
+    },
+    {
+      "id": "nyepi",
+      "occasion": "Hari Suci Nyepi",
+      "motif": "Meru · gunung · bulan",
+      "poster": "nyepi/poster.svg",
+      "ornament": "nyepi/motif.svg",
+      "pattern": "nyepi/pattern.svg"
+    },
+    {
+      "id": "idul-fitri",
+      "occasion": "Idulfitri",
+      "motif": "Ketupat · janur · anyaman",
+      "poster": "idul-fitri/poster.svg",
+      "ornament": "idul-fitri/motif.svg",
+      "pattern": "idul-fitri/pattern.svg"
+    },
+    {
+      "id": "jumat-agung",
+      "occasion": "Jumat Agung",
+      "motif": "Salib · zaitun · lengkung",
+      "poster": "jumat-agung/poster.svg",
+      "ornament": "jumat-agung/motif.svg",
+      "pattern": "jumat-agung/pattern.svg"
+    },
+    {
+      "id": "paskah",
+      "occasion": "Paskah",
+      "motif": "Lili · fajar · dedaunan",
+      "poster": "paskah/poster.svg",
+      "ornament": "paskah/motif.svg",
+      "pattern": "paskah/pattern.svg"
+    },
+    {
+      "id": "kartini",
+      "occasion": "Hari Kartini",
+      "motif": "Surat · pena · melati",
+      "poster": "kartini/poster.svg",
+      "ornament": "kartini/motif.svg",
+      "pattern": "kartini/pattern.svg"
+    },
+    {
+      "id": "buruh",
+      "occasion": "Hari Buruh",
+      "motif": "Roda gigi · perkakas · sinar",
+      "poster": "buruh/poster.svg",
+      "ornament": "buruh/motif.svg",
+      "pattern": "buruh/pattern.svg"
+    },
+    {
+      "id": "pendidikan",
+      "occasion": "Hari Pendidikan Nasional",
+      "motif": "Buku · pensil · tunas",
+      "poster": "pendidikan/poster.svg",
+      "ornament": "pendidikan/motif.svg",
+      "pattern": "pendidikan/pattern.svg"
+    },
+    {
+      "id": "kenaikan",
+      "occasion": "Kenaikan Yesus Kristus",
+      "motif": "Merpati · awan · cahaya",
+      "poster": "kenaikan/poster.svg",
+      "ornament": "kenaikan/motif.svg",
+      "pattern": "kenaikan/pattern.svg"
+    },
+    {
+      "id": "kebangkitan",
+      "occasion": "Hari Kebangkitan Nasional",
+      "motif": "Tunas · matahari · pita",
+      "poster": "kebangkitan/poster.svg",
+      "ornament": "kebangkitan/motif.svg",
+      "pattern": "kebangkitan/pattern.svg"
+    },
+    {
+      "id": "idul-adha",
+      "occasion": "Iduladha",
+      "motif": "Kubah · zaitun · lengkung",
+      "poster": "idul-adha/poster.svg",
+      "ornament": "idul-adha/motif.svg",
+      "pattern": "idul-adha/pattern.svg"
+    },
+    {
+      "id": "waisak",
+      "occasion": "Hari Raya Waisak",
+      "motif": "Teratai · stupa · lentera",
+      "poster": "waisak/poster.svg",
+      "ornament": "waisak/motif.svg",
+      "pattern": "waisak/pattern.svg"
+    },
+    {
+      "id": "pancasila",
+      "occasion": "Hari Lahir Pancasila",
+      "motif": "Bintang · lima bidang · pita",
+      "poster": "pancasila/poster.svg",
+      "ornament": "pancasila/motif.svg",
+      "pattern": "pancasila/pattern.svg"
+    },
+    {
+      "id": "lingkungan",
+      "occasion": "Hari Lingkungan Hidup",
+      "motif": "Bumi · daun · aliran air",
+      "poster": "lingkungan/poster.svg",
+      "ornament": "lingkungan/motif.svg",
+      "pattern": "lingkungan/pattern.svg"
+    },
+    {
+      "id": "hijriah",
+      "occasion": "Tahun Baru Islam",
+      "motif": "Bulan · bintang · lengkung",
+      "poster": "hijriah/poster.svg",
+      "ornament": "hijriah/motif.svg",
+      "pattern": "hijriah/pattern.svg"
+    },
+    {
+      "id": "anak",
+      "occasion": "Hari Anak Nasional",
+      "motif": "Layang-layang · awan · pita",
+      "poster": "anak/poster.svg",
+      "ornament": "anak/motif.svg",
+      "pattern": "anak/pattern.svg"
+    },
+    {
+      "id": "pramuka",
+      "occasion": "Hari Pramuka",
+      "motif": "Tenda · kompas · pinus",
+      "poster": "pramuka/poster.svg",
+      "ornament": "pramuka/motif.svg",
+      "pattern": "pramuka/pattern.svg"
+    },
+    {
+      "id": "kemerdekaan",
+      "occasion": "Hari Kemerdekaan",
+      "motif": "Merah-putih · umbul-umbul · pita",
+      "poster": "kemerdekaan/poster.svg",
+      "ornament": "kemerdekaan/motif.svg",
+      "pattern": "kemerdekaan/pattern.svg"
+    },
+    {
+      "id": "maulid",
+      "occasion": "Maulid Nabi",
+      "motif": "Roset · lengkung · daun",
+      "poster": "maulid/poster.svg",
+      "ornament": "maulid/motif.svg",
+      "pattern": "maulid/pattern.svg"
+    },
+    {
+      "id": "olahraga",
+      "occasion": "Hari Olahraga Nasional",
+      "motif": "Lintasan · medali · laurel",
+      "poster": "olahraga/poster.svg",
+      "ornament": "olahraga/motif.svg",
+      "pattern": "olahraga/pattern.svg"
+    },
+    {
+      "id": "kesaktian-pancasila",
+      "occasion": "Hari Kesaktian Pancasila",
+      "motif": "Bintang · pilar · laurel",
+      "poster": "kesaktian-pancasila/poster.svg",
+      "ornament": "kesaktian-pancasila/motif.svg",
+      "pattern": "kesaktian-pancasila/pattern.svg"
+    },
+    {
+      "id": "batik",
+      "occasion": "Hari Batik Nasional",
+      "motif": "Canting · kawung · titik lilin",
+      "poster": "batik/poster.svg",
+      "ornament": "batik/motif.svg",
+      "pattern": "batik/pattern.svg"
+    },
+    {
+      "id": "sumpah-pemuda",
+      "occasion": "Hari Sumpah Pemuda",
+      "motif": "Pita bertaut · buku · bendera",
+      "poster": "sumpah-pemuda/poster.svg",
+      "ornament": "sumpah-pemuda/motif.svg",
+      "pattern": "sumpah-pemuda/pattern.svg"
+    },
+    {
+      "id": "pahlawan",
+      "occasion": "Hari Pahlawan",
+      "motif": "Tugu · laurel · pelita",
+      "poster": "pahlawan/poster.svg",
+      "ornament": "pahlawan/motif.svg",
+      "pattern": "pahlawan/pattern.svg"
+    },
+    {
+      "id": "guru",
+      "occasion": "Hari Guru Nasional",
+      "motif": "Papan tulis · buku · bunga",
+      "poster": "guru/poster.svg",
+      "ornament": "guru/motif.svg",
+      "pattern": "guru/pattern.svg"
+    },
+    {
+      "id": "ibu",
+      "occasion": "Hari Ibu",
+      "motif": "Tangan · bunga · pita",
+      "poster": "ibu/poster.svg",
+      "ornament": "ibu/motif.svg",
+      "pattern": "ibu/pattern.svg"
+    },
+    {
+      "id": "natal",
+      "occasion": "Hari Natal",
+      "motif": "Cemara · bintang · hadiah",
+      "poster": "natal/poster.svg",
+      "ornament": "natal/motif.svg",
+      "pattern": "natal/pattern.svg"
+    }
+  ]
+}
